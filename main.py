@@ -15,9 +15,10 @@ from firebase_admin import credentials, firestore
 app = FastAPI()
 
 FRONTEND = "https://besa-booking-git-backendv5-be-student-ambassadors-projects.vercel.app"
+STABLE = "https://besa-booking.vercel.app/"
 
 ALLOWED_ORIGINS = [
-    FRONTEND,
+    STABLE,
     "https://besa-booking.vercel.app",
     "http://localhost:5173",
 ]
