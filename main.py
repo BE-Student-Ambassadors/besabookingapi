@@ -106,22 +106,39 @@ except Exception:
 def createEvent(data):
     if not calendar_service:
         return None
-
+    
+    # duration = float(data["duration"])
     start_dt = datetime.strptime(
-        f"{data['date']} {data['time']}", "%Y-%m-%d %I:%M %p"
+        f"{data['date']} {data['startTime']}", "%Y-%m-%d %I:%M %p"
     )
-    end_dt = start_dt + timedelta(hours=1)
+    end_dt = datetime.strptime(
+        f"{data['date']} {data['endTime']}", "%Y-%m-%d %I:%M %p"
+    )
 
     event = {
-        "summary": data.get("tourType", "Event"),
-        "description": (
-            f"Tour ID: {data['tourId']}\n"
-            f"Name: {data['firstName']} {data['lastName']}\n"
-            f"Organization: {data['organization']}\n"
-            f"Role: {data['role']}\n"
-            f"Interests: {', '.join(data.get('interests', []))}\n"
-            f"Notes: {data.get('notes', '')}"
-        ),
+        "summary": {
+            "Thank you for booking a Baskin Engineering Tour. We are excited to have you join us!\n\n"
+            "Tour Details:\n\n"
+            "    Location: Baskin Engineering Courtyard, the brick road area between the two buildings in Baskin. "
+            "This is down the stairs from the Engineering Loop.\n"
+            "    Who to Meet: A Baskin Engineering Tour Guide wearing a name tag!\n\n"
+            "Important Information:\n\n"
+            "    Tour Times: Please note that the tour times are in Pacific Daylight Time (PDT). "
+            "Your Google Calendar invite might adjust to your local time zone, so please double-check your calendar to confirm your tour time. "
+            "If there are any questions about the time you booked, please don't hesitate to contact us.\n"
+            "    No Double Booking: As this is a small tour (1-3 families), kindly avoid double booking as it takes slots away from other participants. "
+            "If you need to cancel, please refer to the Appointlet confirmation email to do so ahead of time or contact us!\n\n"
+            "Contact Us: If you have any questions or concerns, feel free to reach out to us at ucscbesa@ucsc.edu.\n\n"
+            "Parking Information: For on-campus parking, please refer to this parking guide and this video.\n\n"
+            "We look forward to seeing you on the tour!\n\n"
+            "Best regards,\n"
+            "Baskin Engineering Student Ambassadors\n\n"
+            "--------------------------------------------\n"
+            "Get your own Appointlet booking page:\n"
+            "https://www.appointlet.com/"
+        },
+        "location": data["location"],
+        "description": data.get("tourType", "Event"), 
         "start": {
             "dateTime": start_dt.isoformat(),
             "timeZone": "America/Los_Angeles",
@@ -133,11 +150,9 @@ def createEvent(data):
         "attendees": [{"email": data["email"]}],
     }
 
-    return calendar_service.events().insert(
-        calendarId="primary",
-        body=event,
-        sendUpdates="all"
-    ).execute()
+    return (event)
+
+
 
 
 @app.get("/")
@@ -156,12 +171,42 @@ async def global_options(path: str):
         }
     )
 
+@app.post("/test-book")
+async def test_book(request: Request):
+    data = {
+        "attendees": 1,
+        "besas": [],
+        "date": "2025-12-19",
+        "email": "njayasee@ucsc.edu",
+        "firstName": "Description",
+        "groupSize": 1,
+        "interests": ["applied-mathematics"],
+        "lastName": "Tester",
+        "leadGuide": "",
+        "maxAttendees": 3,
+        "notes": "",
+        "organization": "UCSC",
+        "phone": "(626)35012",
+        "role": "counselor",
+        "status": "",
+        "time": "3:30 PM",
+        "timeSlot": "",
+        "tourId": "FT3xl26IyNDiswRTbInY",
+        "tourType": "BESAs Drop In Office Hours"
+    }
+    
+
 
 @app.post("/book-tour/")
 async def book_tour(request: Request):
     data = await request.json()
-    createEvent(data)
-    return {"message": "Tour created successfully", "data": data}
+    event = createEvent(data)
+    
+    return calendar_service.events().insert(
+        calendarId="primary",
+        body=event,
+        sendUpdates="all"
+    ).execute()
 
 
 if __name__ == "__main__":
