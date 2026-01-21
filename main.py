@@ -25,7 +25,7 @@ ALLOWED_ORIGINS = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["https://besa-booking.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -103,43 +103,23 @@ try:
 except Exception:
     calendar_service = None
 
-
 def createEvent(data):
     if not calendar_service:
         return None
-    
-    # duration = float(data["duration"])
-    start_dt = datetime.strptime(
-        f"{data['date']} {data['startTime']}", "%Y-%m-%d %I:%M %p"
-    )
-    end_dt = datetime.strptime(
-        f"{data['date']} {data['endTime']}", "%Y-%m-%d %I:%M %p"
-    )
+
+    start_dt = datetime.fromisoformat(data["startTimeISO"])
+    end_dt = datetime.fromisoformat(data["endTimeISO"])
 
     event = {
-        "summary": {
+        "summary": (
             "Thank you for booking a Baskin Engineering Tour. We are excited to have you join us!\n\n"
-            "Tour Details:\n\n"
-            "    Location: Baskin Engineering Courtyard, the brick road area between the two buildings in Baskin. "
-            "This is down the stairs from the Engineering Loop.\n"
-            "    Who to Meet: A Baskin Engineering Tour Guide wearing a name tag!\n\n"
-            "Important Information:\n\n"
-            "    Tour Times: Please note that the tour times are in Pacific Daylight Time (PDT). "
-            "Your Google Calendar invite might adjust to your local time zone, so please double-check your calendar to confirm your tour time. "
-            "If there are any questions about the time you booked, please don't hesitate to contact us.\n"
-            "    No Double Booking: As this is a small tour (1-3 families), kindly avoid double booking as it takes slots away from other participants. "
-            "If you need to cancel, please refer to the Appointlet confirmation email to do so ahead of time or contact us!\n\n"
-            "Contact Us: If you have any questions or concerns, feel free to reach out to us at ucscbesa@ucsc.edu.\n\n"
-            "Parking Information: For on-campus parking, please refer to this parking guide and this video.\n\n"
-            "We look forward to seeing you on the tour!\n\n"
-            "Best regards,\n"
-            "Baskin Engineering Student Ambassadors\n\n"
-            "--------------------------------------------\n"
-            "Get your own Appointlet booking page:\n"
-            "https://www.appointlet.com/"
-        },
-        "location": data["location"],
-        "description": data.get("tourType", "Event"), 
+            "Location: Baskin Engineering Courtyard\n"
+            "Who to Meet: A Baskin Engineering Tour Guide wearing a name tag\n\n"
+            "Questions? Email ucscbesa@ucsc.edu\n\n"
+            "Baskin Engineering Student Ambassadors"
+        ),
+        "location": data.get("location", ""),
+        "description": data.get("tourType", "Baskin Engineering Tour"),
         "start": {
             "dateTime": start_dt.isoformat(),
             "timeZone": "America/Los_Angeles",
@@ -151,7 +131,7 @@ def createEvent(data):
         "attendees": [{"email": data["email"]}],
     }
 
-    return (event)
+    return event
 
 
 
