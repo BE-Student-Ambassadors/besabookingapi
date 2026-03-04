@@ -12,7 +12,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 
-
 def createEvent(data, calendar_service):
     if not calendar_service:
         return None
@@ -21,16 +20,11 @@ def createEvent(data, calendar_service):
     end_dt = datetime.fromisoformat(data["endTimeISO"])
 
     event = {
-        "summary": data.get(
-            "tourType",
-            "Baskin Engineering In-Person Tour"
-        ),
-
+        "summary": data.get("tourType", "Baskin Engineering In-Person Tour"),
         "location": data.get(
             "location",
-            "Baskin Engineering Courtyard, 606 Engineering Loop, Santa Cruz, CA 95064"
+            "Baskin Engineering Courtyard, 606 Engineering Loop, Santa Cruz, CA 95064",
         ),
-
         "description": (
             "Thank you for booking a Baskin Engineering Tour. We are excited to have you join us!\n\n"
             "Tour Details:\n"
@@ -46,7 +40,6 @@ def createEvent(data, calendar_service):
             "We look forward to seeing you!\n\n"
             "— Baskin Engineering Student Ambassadors"
         ),
-
         "start": {
             "dateTime": start_dt.isoformat(),
             "timeZone": "America/Los_Angeles",
@@ -55,22 +48,30 @@ def createEvent(data, calendar_service):
             "dateTime": end_dt.isoformat(),
             "timeZone": "America/Los_Angeles",
         },
-
         "attendees": [
-            {"email": data["email"]}
+            {
+                "email": data["email"],
+                "displayName": f"{data.get('firstName', '')} {data.get('lastName', '')}".strip(),
+            },
+            *[
+                {
+                    "email": besa["email"],
+                    "displayName": besa["name"],
+                }
+                for besa in data.get("besas", [])
+            ],
         ],
-
-        "transparency": "opaque", 
+        "transparency": "opaque",
         "visibility": "default",
-        "reminders": {
-            "useDefault": True
-        },
+        "reminders": {"useDefault": True},
     }
 
     return event
 
+
 def assignBESA():
     pass
+
 
 def modifyBooking():
     pass
