@@ -222,9 +222,9 @@ def resolve_event_id(payload, booking_doc=None):
     booking_id = resolve_booking_id(payload)
 
     event_id = (
-        payload.get("calendarEventId")
+        (booking_doc or {}).get("calendarEventId")
+        or payload.get("calendarEventId")
         or payload.get("previousCalendarEventId")
-        or (booking_doc or {}).get("calendarEventId")
         or find_calendar_event_id(booking_id)
     )
     if event_id:
