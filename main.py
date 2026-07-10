@@ -1,9 +1,9 @@
 import os
-from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from googleapiclient.errors import HttpError
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -25,7 +25,12 @@ ALLOWED_ORIGINS = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://besa-booking.vercel.app"],
+    # allow_origins=["https://besa-booking.vercel.app"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://besa-booking.vercel.app",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
@@ -64,6 +69,7 @@ except Exception:
 
 
 DEFAULT_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+CALENDAR_ID = "primary"
 
 
 def load_google_calendar_credentials(scopes):
@@ -102,6 +108,134 @@ try:
     )
 except Exception:
     calendar_service = None
+
+
+def require_calendar_service():
+    if not calendar_service:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Google Calendar service is not configured."},
+        )
+    return None
+
+
+def get_booking_doc(booking_id):
+    if not db or not booking_id:
+        return None
+
+    snapshot = db.collection("Bookings").document(booking_id).get()
+    if not snapshot.exists:
+        return None
+
+    data = snapshot.to_dict() or {}
+    data["bookingId"] = snapshot.id
+    return data
+
+
+def update_booking_doc(booking_id, values):
+    if not db or not booking_id:
+        return
+
+    db.collection("Bookings").document(booking_id).set(values, merge=True)
+
+
+def delete_calendar_event(event_id):
+    if not event_id:
+        return False
+
+    try:
+        calendar_service.events().delete(
+            calendarId=CALENDAR_ID,
+            eventId=event_id,
+            sendUpdates="all",
+        ).execute()
+        return True
+    except HttpError as err:
+        if getattr(err, "resp", None) and err.resp.status == 404:
+            return False
+        raise
+
+
+def find_calendar_event_id(booking_id):
+    if not booking_id or not calendar_service:
+        return None
+
+    page_token = None
+    while True:
+        response = calendar_service.events().list(
+            calendarId=CALENDAR_ID,
+            privateExtendedProperty=f"bookingId={booking_id}",
+            singleEvents=True,
+            showDeleted=False,
+            pageToken=page_token,
+        ).execute()
+
+        items = response.get("items", [])
+        if items:
+            return items[0].get("id")
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            return None
+
+
+def find_calendar_event_id_by_details(email, start_iso, end_iso, summary=None):
+    if not calendar_service or not email or not start_iso or not end_iso:
+        return None
+
+    response = calendar_service.events().list(
+        calendarId=CALENDAR_ID,
+        timeMin=start_iso,
+        timeMax=end_iso,
+        singleEvents=True,
+        showDeleted=False,
+    ).execute()
+
+    for item in response.get("items", []):
+        attendees = item.get("attendees", [])
+        attendee_match = any(att.get("email") == email for att in attendees)
+        if not attendee_match:
+            continue
+
+        if summary and item.get("summary") != summary:
+            continue
+
+        return item.get("id")
+
+    return None
+
+
+def insert_calendar_event(booking_data):
+    event = createEvent(booking_data, calendar_service)
+    return calendar_service.events().insert(
+        calendarId=CALENDAR_ID,
+        body=event,
+        sendUpdates="all"
+    ).execute()
+
+
+def resolve_booking_id(payload):
+    return payload.get("bookingId") or payload.get("id")
+
+
+def resolve_event_id(payload, booking_doc=None):
+    booking_id = resolve_booking_id(payload)
+
+    event_id = (
+        payload.get("calendarEventId")
+        or payload.get("previousCalendarEventId")
+        or (booking_doc or {}).get("calendarEventId")
+        or find_calendar_event_id(booking_id)
+    )
+    if event_id:
+        return event_id
+
+    return find_calendar_event_id_by_details(
+        email=payload.get("email") or (booking_doc or {}).get("email"),
+        start_iso=payload.get("previousStartTimeISO") or (booking_doc or {}).get("startTimeISO"),
+        end_iso=payload.get("previousEndTimeISO") or (booking_doc or {}).get("endTimeISO"),
+        summary=payload.get("tourType") or (booking_doc or {}).get("tourType"),
+    )
 
 
 
@@ -150,14 +284,74 @@ async def test_book(request: Request):
 
 @app.post("/book-tour/")
 async def book_tour(request: Request):
+    service_error = require_calendar_service()
+    if service_error:
+        return service_error
+
     data = await request.json()
-    event = createEvent(data, calendar_service)
-    
-    return calendar_service.events().insert(
-        calendarId="primary",
-        body=event,
-        sendUpdates="all"
-    ).execute()
+    booking_id = resolve_booking_id(data)
+    if booking_id and "bookingId" not in data:
+        data["bookingId"] = booking_id
+
+    result = insert_calendar_event(data)
+
+    if booking_id:
+        update_booking_doc(booking_id, {"calendarEventId": result.get("id")})
+
+    return result
+
+
+@app.post("/cancel-booking/")
+async def cancel_booking(request: Request):
+    service_error = require_calendar_service()
+    if service_error:
+        return service_error
+
+    payload = await request.json()
+    booking_id = resolve_booking_id(payload)
+    booking_doc = get_booking_doc(booking_id)
+
+    event_id = resolve_event_id(payload, booking_doc)
+
+    deleted = delete_calendar_event(event_id)
+
+    if booking_id:
+        update_booking_doc(booking_id, {"calendarEventId": firestore.DELETE_FIELD})
+
+    return {
+        "bookingId": booking_id,
+        "calendarEventId": event_id,
+        "deleted": deleted,
+    }
+
+
+@app.post("/reschedule-booking/")
+async def reschedule_booking(request: Request):
+    service_error = require_calendar_service()
+    if service_error:
+        return service_error
+
+    payload = await request.json()
+    booking_id = resolve_booking_id(payload)
+    if booking_id and "bookingId" not in payload:
+        payload["bookingId"] = booking_id
+
+    booking_doc = get_booking_doc(booking_id)
+    old_event_id = resolve_event_id(payload, booking_doc)
+
+    deleted = delete_calendar_event(old_event_id)
+    new_event = insert_calendar_event(payload)
+
+    if booking_id:
+        update_booking_doc(booking_id, {"calendarEventId": new_event.get("id")})
+
+    return {
+        "bookingId": booking_id,
+        "deletedOriginal": deleted,
+        "oldCalendarEventId": old_event_id,
+        "newCalendarEventId": new_event.get("id"),
+        "newEvent": new_event,
+    }
 
 
 if __name__ == "__main__":

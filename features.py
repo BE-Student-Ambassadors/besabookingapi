@@ -1,15 +1,4 @@
-import os
-from datetime import datetime, timedelta
-
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
-import firebase_admin
-from firebase_admin import credentials, firestore
+from datetime import datetime
 
 
 def createEvent(data, calendar_service):
@@ -64,6 +53,11 @@ def createEvent(data, calendar_service):
         "transparency": "opaque",
         "visibility": "default",
         "reminders": {"useDefault": True},
+        "extendedProperties": {
+            "private": {
+                "bookingId": data.get("bookingId", data.get("id", "")),
+            }
+        },
     }
 
     return event
