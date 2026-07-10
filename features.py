@@ -1,12 +1,54 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
+
+
+def parse_pacific_datetime(date_str, time_label):
+    time_text = time_label.strip()
+    parsed = datetime.strptime(time_text, "%I:%M %p")
+    year, month, day = map(int, date_str.split("-"))
+    return datetime(
+        year,
+        month,
+        day,
+        parsed.hour,
+        parsed.minute,
+        0,
+        tzinfo=PACIFIC_TZ,
+    )
+
+
+def parse_booking_datetime(data, iso_key, date_key, time_key):
+    date_str = data.get(date_key)
+    time_label = data.get(time_key)
+    if date_str and time_label:
+        return parse_pacific_datetime(date_str, time_label)
+
+    iso_value = data.get(iso_key)
+    if not iso_value:
+        raise KeyError(iso_key)
+
+    parsed = datetime.fromisoformat(iso_value)
+    return datetime(
+        parsed.year,
+        parsed.month,
+        parsed.day,
+        parsed.hour,
+        parsed.minute,
+        parsed.second,
+        parsed.microsecond,
+        tzinfo=PACIFIC_TZ,
+    )
 
 
 def createEvent(data, calendar_service):
     if not calendar_service:
         return None
 
-    start_dt = datetime.fromisoformat(data["startTimeISO"])
-    end_dt = datetime.fromisoformat(data["endTimeISO"])
+    start_dt = parse_booking_datetime(data, "startTimeISO", "date", "startTime")
+    end_dt = parse_booking_datetime(data, "endTimeISO", "date", "endTime")
 
     event = {
         "summary": data.get("tourType", "Baskin Engineering In-Person Tour"),
