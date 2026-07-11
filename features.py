@@ -50,6 +50,31 @@ def createEvent(data, calendar_service):
     start_dt = parse_booking_datetime(data, "startTimeISO", "date", "startTime")
     end_dt = parse_booking_datetime(data, "endTimeISO", "date", "endTime")
 
+    attendees = [
+        {
+            "email": data["email"],
+            "displayName": f"{data.get('firstName', '')} {data.get('lastName', '')}".strip(),
+        }
+    ]
+
+    for besa in data.get("besas", []):
+        if isinstance(besa, dict):
+            email = besa.get("email")
+            if email:
+                attendees.append(
+                    {
+                        "email": email,
+                        "displayName": besa.get("name", ""),
+                    }
+                )
+        elif isinstance(besa, str) and besa:
+            attendees.append(
+                {
+                    "email": besa,
+                    "displayName": "",
+                }
+            )
+
     event = {
         "summary": data.get("tourType", "Baskin Engineering In-Person Tour"),
         "location": data.get(
@@ -79,19 +104,7 @@ def createEvent(data, calendar_service):
             "dateTime": end_dt.isoformat(),
             "timeZone": "America/Los_Angeles",
         },
-        "attendees": [
-            {
-                "email": data["email"],
-                "displayName": f"{data.get('firstName', '')} {data.get('lastName', '')}".strip(),
-            },
-            *[
-                {
-                    "email": besa["email"],
-                    "displayName": besa["name"],
-                }
-                for besa in data.get("besas", [])
-            ],
-        ],
+        "attendees": attendees,
         "transparency": "opaque",
         "visibility": "default",
         "reminders": {"useDefault": True},
