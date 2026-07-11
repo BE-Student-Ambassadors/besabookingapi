@@ -201,6 +201,28 @@ This is the process that now creates, updates, and deletes calendar invites:
 python3 watch_bookings.py
 ```
 
+### Firebase Cloud Functions
+
+This repo also includes a production-ready Firebase Functions codebase in [`functions/`](/Users/arely/besabookingapi/functions) that replaces the local watcher with Firestore-triggered functions.
+
+Before deploying functions, set these environment variables for the functions runtime:
+
+- `CALENDAR_CLIENT_ID`
+- `CALENDAR_CLIENT_SECRET`
+- `CALENDAR_REFRESH_TOKEN`
+- `CALENDAR_TOKEN` - optional
+- `CALENDAR_ID` - optional, defaults to `primary`
+
+Then deploy:
+
+```bash
+cd functions
+npm install
+npm run build
+cd ..
+npx firebase-tools deploy --only functions
+```
+
 If you want to run the module directly:
 
 ```bash
