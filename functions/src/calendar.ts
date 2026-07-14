@@ -229,7 +229,22 @@ export async function insertCalendarEvent(
   const response = await calendar.events.insert({
     calendarId,
     requestBody: createCalendarEvent(booking),
-    sendUpdates: "all",
+    sendUpdates: "externalOnly",
+  });
+  return response.data;
+}
+
+export async function updateCalendarEvent(
+  calendar: calendar_v3.Calendar,
+  eventId: string,
+  booking: BookingRecord,
+  calendarId = "primary"
+): Promise<calendar_v3.Schema$Event> {
+  const response = await calendar.events.patch({
+    calendarId,
+    eventId,
+    requestBody: createCalendarEvent(booking),
+    sendUpdates: "externalOnly",
   });
   return response.data;
 }
@@ -244,7 +259,7 @@ export async function deleteCalendarEvent(
     await calendar.events.delete({
       calendarId,
       eventId,
-      sendUpdates: "all",
+      sendUpdates: "externalOnly",
     });
     return true;
   } catch (error: unknown) {

@@ -18,6 +18,7 @@ import {
   insertCalendarEvent,
   resolveBookingId,
   resolveEventId,
+  updateCalendarEvent,
 } from "./calendar";
 
 initializeApp();
@@ -72,7 +73,6 @@ async function syncBookingRecord(booking: BookingRecord) {
     return;
   }
 
-  const {calendar, calendarId} = getCalendarRuntime();
   const syncHash = bookingSyncHash(booking);
   if (
     booking.calendarSyncHash === syncHash &&
@@ -82,10 +82,12 @@ async function syncBookingRecord(booking: BookingRecord) {
     return;
   }
 
-  const oldEventId = await resolveEventId(calendar, booking, booking, calendarId);
-  const deletedOriginal = await deleteCalendarEvent(calendar, oldEventId, calendarId);
-  const newEvent = await insertCalendarEvent(calendar, booking, calendarId);
-  const newCalendarEventId = newEvent.id || "";
+  const {calendar, calendarId} = getCalendarRuntime();
+  const existingEventId = await resolveEventId(calendar, booking, booking, calendarId);
+  const syncedEvent = existingEventId ?
+    await updateCalendarEvent(calendar, existingEventId, booking, calendarId) :
+    await insertCalendarEvent(calendar, booking, calendarId);
+  const newCalendarEventId = syncedEvent.id || existingEventId || "";
 
   await db.collection("Bookings").doc(bookingId).set(
     syncMetadataUpdate(newCalendarEventId, syncHash),
@@ -94,8 +96,8 @@ async function syncBookingRecord(booking: BookingRecord) {
 
   logger.info("Booking synced to Google Calendar", {
     bookingId,
-    deletedOriginal,
-    oldCalendarEventId: oldEventId || null,
+    operation: existingEventId ? "updated" : "inserted",
+    oldCalendarEventId: existingEventId || null,
     newCalendarEventId,
   });
 }
@@ -144,11 +146,18 @@ export const onBookingCreated = onDocumentCreated(bookingTriggerOptions, async (
 });
 
 export const onBookingUpdated = onDocumentUpdated(bookingTriggerOptions, async (event) => {
-  const data = event.data?.after.data() as BookingRecord | undefined;
-  if (!data) return;
-
   const bookingId = event.params.bookingId;
-  const booking = {...data, bookingId};
+  const beforeData = event.data?.before.data() as BookingRecord | undefined;
+  const afterData = event.data?.after.data() as BookingRecord | undefined;
+  if (!afterData) return;
+
+  const beforeBooking = beforeData ? {...beforeData, bookingId} : undefined;
+  const booking = {...afterData, bookingId};
+
+  if (beforeBooking && bookingSyncHash(beforeBooking) === bookingSyncHash(booking)) {
+    logger.debug("Skipping metadata-only booking update", {bookingId});
+    return;
+  }
 
   try {
     await syncBookingRecord(booking);
