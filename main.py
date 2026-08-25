@@ -1,5 +1,10 @@
 import os
 
+from dotenv import load_dotenv
+load_dotenv()
+
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -12,6 +17,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 from features import createEvent
+from routers.bookings import router as bookings_router
 app = FastAPI()
 
 FRONTEND = "https://besa-booking-git-backendv5-be-student-ambassadors-projects.vercel.app"
@@ -64,7 +70,8 @@ try:
     firebase_cred = load_firebase_credentials()
     firebase_admin.initialize_app(firebase_cred)
     db = firestore.client()
-except Exception:
+except Exception as e:
+    print("FIREBASE INIT FAILED:", repr(e))
     db = None
 
 
@@ -238,6 +245,7 @@ def resolve_event_id(payload, booking_doc=None):
     )
 
 
+app.include_router(bookings_router, prefix="/api/bookings", tags=["bookings"])
 
 
 @app.get("/")
