@@ -19,8 +19,13 @@ export type BesaRecord = {
 export type BookingRecord = {
   bookingId?: string;
   id?: string;
+  tourId?: string;
   tourType?: string;
   location?: string;
+  calendarInviteLocation?: string;
+  description?: string;
+  inviteDetails?: string;
+  calendarInviteDetails?: string;
   date?: string;
   time?: string;
   startTime?: string;
@@ -33,6 +38,8 @@ export type BookingRecord = {
   status?: string;
   besas?: Array<BesaRecord | string>;
   calendarEventId?: string;
+  calendarSyncCalendarId?: string;
+  googleCalendarId?: string;
   calendarSyncHash?: string;
   calendarSyncStatus?: string;
   previousCalendarEventId?: string;
@@ -44,8 +51,13 @@ export type BookingRecord = {
 const DEFAULT_SCOPES = ["https://www.googleapis.com/auth/calendar"];
 const SYNC_FIELDS = [
   "bookingId",
+  "tourId",
   "tourType",
   "location",
+  "calendarInviteLocation",
+  "description",
+  "inviteDetails",
+  "calendarInviteDetails",
   "date",
   "time",
   "startTime",
@@ -57,6 +69,44 @@ const SYNC_FIELDS = [
   "lastName",
   "status",
 ] as const;
+
+type TourInviteConfig = {
+  location: string;
+};
+
+const LEGACY_DEFAULT_INVITE_DESCRIPTION = [
+  "Thank you for booking a Baskin Engineering Tour. We are excited to have you join us!",
+  "",
+  "Tour Details:",
+  "• Location: Baskin Engineering Courtyard, the brick road area between the two buildings in Baskin.",
+  "  This is down the stairs from the Engineering Loop.",
+  "• Who to Meet: A Baskin Engineering Tour Guide wearing a name tag.",
+  "",
+  "Important Information:",
+  "• Tour Times: All tours are scheduled in Pacific Time (PT). Your calendar may convert this to your local time zone automatically.",
+  "• No Double Booking: This is a small tour (1–3 families). Please avoid double booking.",
+  "",
+  "Questions?",
+  "Email us at ucscbesa@ucsc.edu",
+  "",
+  "We look forward to seeing you!",
+  "",
+  "— Baskin Engineering Student Ambassadors",
+].join("\n");
+
+const FALLBACK_TOUR_CONFIG: TourInviteConfig = {
+  location: "Baskin Engineering Courtyard, 606 Engineering Loop, Santa Cruz, CA 95064",
+};
+
+const TOUR_TYPE_CONFIGS: Record<string, TourInviteConfig> = {
+  "baskin engineering in-person tour": FALLBACK_TOUR_CONFIG,
+  "baskin engineering virtual tour": {
+    location: "Zoom",
+  },
+  "baskin engineering transfer tour": {
+    location: "Baskin Engineering Courtyard, 606 Engineering Loop, Santa Cruz, CA 95064",
+  },
+};
 
 export function resolveBookingId(data: BookingRecord): string | undefined {
   return data.bookingId || data.id;
@@ -133,6 +183,14 @@ function resolveEndLabel(data: BookingRecord): string {
   return (data.endTime || "").toString();
 }
 
+function normalizeTourType(tourType?: string): string {
+  return (tourType || "").trim().toLowerCase();
+}
+
+function resolveTourInviteConfig(data: BookingRecord): TourInviteConfig {
+  return TOUR_TYPE_CONFIGS[normalizeTourType(data.tourType)] || FALLBACK_TOUR_CONFIG;
+}
+
 export function createCalendarEvent(data: BookingRecord): calendar_v3.Schema$Event {
   const attendees: calendar_v3.Schema$EventAttendee[] = [
     {
@@ -158,31 +216,20 @@ export function createCalendarEvent(data: BookingRecord): calendar_v3.Schema$Eve
   const date = data.date || "";
   const startLabel = resolveStartLabel(data);
   const endLabel = resolveEndLabel(data);
+  const tourConfig = resolveTourInviteConfig(data);
+  const description =
+    typeof data.calendarInviteDetails === "string" && data.calendarInviteDetails.trim() ?
+      data.calendarInviteDetails :
+      typeof data.inviteDetails === "string" && data.inviteDetails.trim() ?
+      data.inviteDetails :
+      typeof data.description === "string" && data.description.trim() ?
+        data.description :
+        LEGACY_DEFAULT_INVITE_DESCRIPTION;
 
   return {
     summary: data.tourType || "Baskin Engineering In-Person Tour",
-    location:
-      data.location ||
-      "Baskin Engineering Courtyard, 606 Engineering Loop, Santa Cruz, CA 95064",
-    description: [
-      "Thank you for booking a Baskin Engineering Tour. We are excited to have you join us!",
-      "",
-      "Tour Details:",
-      "• Location: Baskin Engineering Courtyard, the brick road area between the two buildings in Baskin.",
-      "  This is down the stairs from the Engineering Loop.",
-      "• Who to Meet: A Baskin Engineering Tour Guide wearing a name tag.",
-      "",
-      "Important Information:",
-      "• Tour Times: All tours are scheduled in Pacific Time (PT). Your calendar may convert this to your local time zone automatically.",
-      "• No Double Booking: This is a small tour (1–3 families). Please avoid double booking.",
-      "",
-      "Questions?",
-      "Email us at ucscbesa@ucsc.edu",
-      "",
-      "We look forward to seeing you!",
-      "",
-      "— Baskin Engineering Student Ambassadors",
-    ].join("\n"),
+    location: data.calendarInviteLocation || data.location || tourConfig.location,
+    description,
     start: {
       dateTime: localDateTimeString(date, startLabel),
       timeZone: "America/Los_Angeles",
@@ -229,7 +276,22 @@ export async function insertCalendarEvent(
   const response = await calendar.events.insert({
     calendarId,
     requestBody: createCalendarEvent(booking),
-    sendUpdates: "all",
+    sendUpdates: "externalOnly",
+  });
+  return response.data;
+}
+
+export async function updateCalendarEvent(
+  calendar: calendar_v3.Calendar,
+  eventId: string,
+  booking: BookingRecord,
+  calendarId = "primary"
+): Promise<calendar_v3.Schema$Event> {
+  const response = await calendar.events.patch({
+    calendarId,
+    eventId,
+    requestBody: createCalendarEvent(booking),
+    sendUpdates: "externalOnly",
   });
   return response.data;
 }
@@ -244,7 +306,7 @@ export async function deleteCalendarEvent(
     await calendar.events.delete({
       calendarId,
       eventId,
-      sendUpdates: "all",
+      sendUpdates: "externalOnly",
     });
     return true;
   } catch (error: unknown) {

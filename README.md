@@ -86,7 +86,9 @@ Current behavior:
 
 - Reads `startTimeISO` and `endTimeISO` from the request data.
 - Uses `tourType` as the event title when present.
-- Falls back to a default Baskin Engineering location.
+- Resolves invite defaults in this order:
+- `calendarInviteLocation` from the booking, then from the related `Tours/{tourId}` document, then booking `location`, then the tour-type fallback
+- `calendarInviteDetails` from the booking, then from the related `Tours/{tourId}` document, then booking `inviteDetails`, then booking `description`, then the tour-type fallback
 - Adds the booking email as an attendee.
 - Adds any BESAs listed in `data["besas"]` as attendees too.
 - Sets timezone to `America/Los_Angeles`.
@@ -285,7 +287,13 @@ The event created in `features.py` includes:
 - `visibility`
 - `reminders`
 
-The description text is currently hard-coded and includes:
+Tour-level fields now supported by this backend:
+
+- `tourId` on the booking
+- `calendarInviteLocation` on the booking or `Tours/{tourId}`
+- `calendarInviteDetails` on the booking or `Tours/{tourId}`
+
+If those custom fields are missing, the description text falls back to the built-in tour-type templates, which currently include:
 
 - Tour location instructions
 - Contact email

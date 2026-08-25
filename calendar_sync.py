@@ -15,8 +15,13 @@ DEFAULT_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 CALENDAR_ID = "primary"
 SYNC_FIELDS = (
     "bookingId",
+    "tourId",
     "tourType",
     "location",
+    "calendarInviteLocation",
+    "description",
+    "inviteDetails",
+    "calendarInviteDetails",
     "date",
     "time",
     "startTime",
@@ -113,6 +118,38 @@ def update_booking_doc(db, booking_id, values):
         return
 
     db.collection("Bookings").document(booking_id).set(values, merge=True)
+
+
+def get_tour_doc(db, tour_id):
+    if not db or not tour_id:
+        return None
+
+    snapshot = db.collection("Tours").document(tour_id).get()
+    if not snapshot.exists:
+        return None
+
+    data = snapshot.to_dict() or {}
+    data["tourId"] = snapshot.id
+    return data
+
+
+def enrich_booking_with_tour_defaults(db, booking_data):
+    tour_id = booking_data.get("tourId")
+    if not tour_id:
+        return booking_data
+
+    tour_doc = get_tour_doc(db, tour_id)
+    if not tour_doc:
+        return booking_data
+
+    enriched = dict(booking_data)
+    if not enriched.get("calendarInviteLocation") and tour_doc.get("calendarInviteLocation"):
+        enriched["calendarInviteLocation"] = tour_doc.get("calendarInviteLocation")
+    if not enriched.get("calendarInviteDetails") and tour_doc.get("calendarInviteDetails"):
+        enriched["calendarInviteDetails"] = tour_doc.get("calendarInviteDetails")
+    if not enriched.get("location") and tour_doc.get("location"):
+        enriched["location"] = tour_doc.get("location")
+    return enriched
 
 
 def delete_calendar_event(calendar_service, event_id):
@@ -265,6 +302,8 @@ def sync_booking_record(db, calendar_service, booking_data):
     booking_id = resolve_booking_id(booking_data)
     if booking_id and "bookingId" not in booking_data:
         booking_data = {**booking_data, "bookingId": booking_id}
+
+    booking_data = enrich_booking_with_tour_defaults(db, booking_data)
 
     if not booking_ready_for_calendar(booking_data):
         return {"status": "skipped", "reason": "booking_not_ready", "bookingId": booking_id}
