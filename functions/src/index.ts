@@ -29,8 +29,7 @@ const calendarClientId = defineSecret("CALENDAR_CLIENT_ID");
 const calendarClientSecret = defineSecret("CALENDAR_CLIENT_SECRET");
 const calendarRefreshToken = defineSecret("CALENDAR_REFRESH_TOKEN");
 
-function getCalendarRuntime() {
-  const calendarId = process.env.CALENDAR_ID || "primary";
+function getCalendarRuntime(calendarId: string) {
   const calendar = getCalendarClientFromSecrets({
     clientId: calendarClientId.value(),
     clientSecret: calendarClientSecret.value(),
@@ -41,13 +40,52 @@ function getCalendarRuntime() {
   return {calendar, calendarId};
 }
 
-function syncMetadataUpdate(eventId: string, syncHash: string) {
+function syncMetadataUpdate(eventId: string, syncHash: string, calendarId: string) {
   return {
     calendarEventId: eventId,
+    calendarSyncCalendarId: calendarId,
     calendarSyncHash: syncHash,
     calendarSyncStatus: "synced",
     calendarSyncUpdatedAt: new Date().toISOString(),
   };
+}
+
+async function enrichBookingWithTourDefaults(booking: BookingRecord): Promise<BookingRecord> {
+  if (!booking.tourId) {
+    return booking;
+  }
+
+  const tourSnapshot = await db.collection("Tours").doc(booking.tourId).get();
+  if (!tourSnapshot.exists) {
+    return booking;
+  }
+
+  const tourData = tourSnapshot.data() as BookingRecord | undefined;
+  if (!tourData) {
+    return booking;
+  }
+
+  return {
+    ...booking,
+    calendarInviteLocation:
+      booking.calendarInviteLocation ||
+      (typeof tourData.calendarInviteLocation === "string" ? tourData.calendarInviteLocation : undefined),
+    calendarInviteDetails:
+      booking.calendarInviteDetails ||
+      (typeof tourData.calendarInviteDetails === "string" ? tourData.calendarInviteDetails : undefined),
+    location:
+      booking.location ||
+      (typeof tourData.location === "string" ? tourData.location : undefined),
+    googleCalendarId:
+      typeof tourData.googleCalendarId === "string" ? tourData.googleCalendarId : booking.googleCalendarId,
+  };
+}
+
+function resolveCalendarId(booking: BookingRecord) {
+  if (typeof booking.googleCalendarId === "string" && booking.googleCalendarId.trim()) {
+    return booking.googleCalendarId.trim();
+  }
+  return process.env.CALENDAR_ID || "primary";
 }
 
 async function writeSyncError(bookingId: string, error: unknown) {
@@ -68,29 +106,51 @@ async function syncBookingRecord(booking: BookingRecord) {
     return;
   }
 
-  if (!bookingReadyForCalendar(booking)) {
+  const enrichedBooking = await enrichBookingWithTourDefaults(booking);
+
+  if (!bookingReadyForCalendar(enrichedBooking)) {
     logger.info("Skipping booking not ready for calendar sync", {bookingId});
     return;
   }
 
-  const syncHash = bookingSyncHash(booking);
+  const syncHash = bookingSyncHash(enrichedBooking);
   if (
-    booking.calendarSyncHash === syncHash &&
-    booking.calendarSyncStatus === "synced"
+    enrichedBooking.calendarSyncHash === syncHash &&
+    enrichedBooking.calendarSyncStatus === "synced"
   ) {
     logger.debug("Booking already synced", {bookingId});
     return;
   }
 
-  const {calendar, calendarId} = getCalendarRuntime();
-  const existingEventId = await resolveEventId(calendar, booking, booking, calendarId);
-  const syncedEvent = existingEventId ?
-    await updateCalendarEvent(calendar, existingEventId, booking, calendarId) :
-    await insertCalendarEvent(calendar, booking, calendarId);
+  const calendarId = resolveCalendarId(enrichedBooking);
+  const existingCalendarId = enrichedBooking.calendarSyncCalendarId || calendarId;
+  const {calendar: existingCalendar} = getCalendarRuntime(existingCalendarId);
+  const existingEventId = await resolveEventId(
+    existingCalendar,
+    enrichedBooking,
+    enrichedBooking,
+    existingCalendarId
+  );
+
+  let syncedEvent;
+  if (existingEventId && existingCalendarId !== calendarId) {
+    await deleteCalendarEvent(existingCalendar, existingEventId, existingCalendarId);
+    const {calendar} = getCalendarRuntime(calendarId);
+    syncedEvent = await insertCalendarEvent(calendar, enrichedBooking, calendarId);
+  } else if (existingEventId) {
+    syncedEvent = await updateCalendarEvent(
+      existingCalendar,
+      existingEventId,
+      enrichedBooking,
+      calendarId
+    );
+  } else {
+    syncedEvent = await insertCalendarEvent(existingCalendar, enrichedBooking, calendarId);
+  }
   const newCalendarEventId = syncedEvent.id || existingEventId || "";
 
   await db.collection("Bookings").doc(bookingId).set(
-    syncMetadataUpdate(newCalendarEventId, syncHash),
+    syncMetadataUpdate(newCalendarEventId, syncHash, calendarId),
     {merge: true}
   );
 
@@ -109,7 +169,9 @@ async function deleteBookingRecord(booking: BookingRecord) {
     return;
   }
 
-  const {calendar, calendarId} = getCalendarRuntime();
+  const enrichedBooking = await enrichBookingWithTourDefaults(booking);
+  const calendarId = enrichedBooking.calendarSyncCalendarId || resolveCalendarId(enrichedBooking);
+  const {calendar} = getCalendarRuntime(calendarId);
   const eventId = await resolveEventId(calendar, booking, booking, calendarId);
   const deleted = await deleteCalendarEvent(calendar, eventId, calendarId);
 
