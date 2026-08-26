@@ -207,13 +207,25 @@ python3 watch_bookings.py
 
 This repo also includes a production-ready Firebase Functions codebase in [`functions/`](/Users/arely/besabookingapi/functions) that replaces the local watcher with Firestore-triggered functions.
 
+#### Per-tour Calendar Destinations
+
+Set `googleCalendarId` on a `Tours/{tourId}` document to route that tour's booking invitations to a specific Google Calendar. The booking triggers load the tour document for every sync and resolve the destination in this order:
+
+1. `Tours/{tourId}.googleCalendarId`
+2. `CALENDAR_ID`
+3. `primary`
+
+The chosen calendar is saved as `calendarSyncCalendarId` on the booking alongside `calendarEventId`. Subsequent booking updates and deletes use that saved calendar so an event is updated or removed from the calendar where it was created. If a later booking sync targets a different calendar, the function deletes the old event and creates a new one in the destination calendar.
+
+The Google account associated with `CALENDAR_REFRESH_TOKEN` must have permission to create events in every calendar that can be selected, including shared calendars such as Slugworks.
+
 Before deploying functions, set these environment variables for the functions runtime:
 
 - `CALENDAR_CLIENT_ID`
 - `CALENDAR_CLIENT_SECRET`
 - `CALENDAR_REFRESH_TOKEN`
 - `CALENDAR_TOKEN` - optional
-- `CALENDAR_ID` - optional, defaults to `primary`
+- `CALENDAR_ID` - optional fallback for tours without `googleCalendarId`; defaults to `primary`
 
 Then deploy:
 
@@ -222,7 +234,7 @@ cd functions
 npm install
 npm run build
 cd ..
-npx firebase-tools deploy --only functions
+npx firebase-tools deploy --only functions:onBookingCreated,functions:onBookingUpdated,functions:onBookingDeleted
 ```
 
 If you want to run the module directly:

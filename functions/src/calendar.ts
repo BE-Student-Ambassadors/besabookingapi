@@ -276,7 +276,7 @@ export async function insertCalendarEvent(
   const response = await calendar.events.insert({
     calendarId,
     requestBody: createCalendarEvent(booking),
-    sendUpdates: "externalOnly",
+    sendUpdates: "all",
   });
   return response.data;
 }
@@ -291,7 +291,7 @@ export async function updateCalendarEvent(
     calendarId,
     eventId,
     requestBody: createCalendarEvent(booking),
-    sendUpdates: "externalOnly",
+    sendUpdates: "all",
   });
   return response.data;
 }
@@ -306,7 +306,7 @@ export async function deleteCalendarEvent(
     await calendar.events.delete({
       calendarId,
       eventId,
-      sendUpdates: "externalOnly",
+      sendUpdates: "all",
     });
     return true;
   } catch (error: unknown) {
@@ -371,21 +371,24 @@ export async function resolveEventId(
   calendar: calendar_v3.Calendar,
   payload: BookingRecord,
   existing?: BookingRecord,
-  calendarId = "primary"
+  calendarId = "primary",
+  allowDetailsFallback = false
 ): Promise<string | undefined> {
   const bookingId = resolveBookingId(payload);
-  return (
+  const eventId =
     existing?.calendarEventId ||
     payload.calendarEventId ||
     payload.previousCalendarEventId ||
-    (await findCalendarEventId(calendar, bookingId, calendarId)) ||
-    (await findCalendarEventIdByDetails(
-      calendar,
-      payload.email || existing?.email,
-      payload.previousStartTimeISO || existing?.startTimeISO,
-      payload.previousEndTimeISO || existing?.endTimeISO,
-      payload.tourType || existing?.tourType,
-      calendarId
-    ))
+    (await findCalendarEventId(calendar, bookingId, calendarId));
+
+  if (eventId || !allowDetailsFallback) return eventId;
+
+  return findCalendarEventIdByDetails(
+    calendar,
+    payload.email || existing?.email,
+    payload.previousStartTimeISO || existing?.startTimeISO,
+    payload.previousEndTimeISO || existing?.endTimeISO,
+    payload.tourType || existing?.tourType,
+    calendarId
   );
 }

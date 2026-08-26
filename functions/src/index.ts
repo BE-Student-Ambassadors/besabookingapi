@@ -172,7 +172,7 @@ async function deleteBookingRecord(booking: BookingRecord) {
   const enrichedBooking = await enrichBookingWithTourDefaults(booking);
   const calendarId = enrichedBooking.calendarSyncCalendarId || resolveCalendarId(enrichedBooking);
   const {calendar} = getCalendarRuntime(calendarId);
-  const eventId = await resolveEventId(calendar, booking, booking, calendarId);
+  const eventId = await resolveEventId(calendar, booking, booking, calendarId, true);
   const deleted = await deleteCalendarEvent(calendar, eventId, calendarId);
 
   logger.info("Deleted Google Calendar event for booking", {
