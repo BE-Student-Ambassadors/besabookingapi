@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from calendar_sync import delete_booking_record, get_booking_doc, get_calendar_service, get_db, sync_booking_record
+from calendar_sync import get_db
 from routers.bookings import router as bookings_router
 
 app = FastAPI()
@@ -28,26 +28,6 @@ try:
     db = get_db()
 except Exception:
     db = None
-
-try:
-    calendar_service = get_calendar_service()
-except Exception:
-    calendar_service = None
-
-
-def require_services():
-    if not db:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Firestore is not configured."},
-        )
-    if not calendar_service:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Google Calendar service is not configured."},
-        )
-    return None
-
 
 @app.get("/")
 def root():
@@ -95,32 +75,6 @@ async def reschedule_booking(request: Request):
         "mode": "firestore-driven",
         "message": "Update the booking document in Firestore. Calendar sync now runs from Firestore changes.",
     }
-
-
-@app.post("/sync-booking/{booking_id}")
-async def sync_booking(booking_id: str):
-    service_error = require_services()
-    if service_error:
-        return service_error
-
-    booking_doc = get_booking_doc(db, booking_id)
-    if not booking_doc:
-        raise HTTPException(status_code=404, detail="Booking not found.")
-
-    return sync_booking_record(db, calendar_service, booking_doc)
-
-
-@app.post("/delete-booking-sync/{booking_id}")
-async def delete_booking_sync(booking_id: str):
-    service_error = require_services()
-    if service_error:
-        return service_error
-
-    booking_doc = get_booking_doc(db, booking_id)
-    if not booking_doc:
-        raise HTTPException(status_code=404, detail="Booking not found.")
-
-    return delete_booking_record(db, calendar_service, booking_doc)
 
 
 if __name__ == "__main__":

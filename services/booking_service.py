@@ -150,25 +150,4 @@ def create_booking(db, payload: BookingCreateRequest) -> Dict[str, Any]:
     booking_payload["bookingId"] = result["bookingId"]
     booking_payload["createdAt"] = result["createdAt"]
 
-    try:
-        _sync_to_calendar(booking_payload)
-    except Exception:
-        pass
-
     return booking_payload
-
-
-def _sync_to_calendar(booking_payload: Dict[str, Any]) -> None:
-    from main import calendar_service, insert_calendar_event  # noqa: local import by design
-
-    if not calendar_service:
-        return
-
-    result = insert_calendar_event(booking_payload)
-    if result and result.get("id"):
-        repo.update_booking(_get_db(), booking_payload["bookingId"], {"calendarEventId": result["id"]})
-
-
-def _get_db():
-    from main import db  # noqa: local import by design
-    return db
