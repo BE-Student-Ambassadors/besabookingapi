@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from calendar_sync import delete_booking_record, get_booking_doc, get_calendar_service, get_db, sync_booking_record
+from routers.bookings import router as bookings_router
 
 app = FastAPI()
 
@@ -20,6 +21,8 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+
+app.include_router(bookings_router, prefix="/api/bookings", tags=["bookings"])
 
 try:
     db = get_db()
