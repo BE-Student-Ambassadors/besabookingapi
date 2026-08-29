@@ -1,18 +1,18 @@
 # Backend Documentation
 
-This folder contains the FastAPI backend used by the booking app to create Google Calendar events after a booking is submitted.
+This folder contains the backend logic used by the booking app to keep Google Calendar in sync with Firestore bookings.
 
 The backend is intentionally small. It currently does **one real production job**:
 
-1. Accept booking payloads from the frontend.
-2. Convert them into a Google Calendar event.
-3. Insert that event into the configured Google Calendar account.
-
-It also initializes Firebase Admin for future server-side Firestore work, but the current booking flow still writes to Firestore from the frontend.
+1. Watch the Firestore `Bookings` collection.
+2. Create, replace, or delete Google Calendar events when bookings change.
+3. Store `calendarEventId` and sync metadata back on the booking document.
 
 ## What Lives Here
 
-- `main.py` - FastAPI application, CORS setup, Firebase and Google Calendar bootstrap, and HTTP routes.
+- `main.py` - FastAPI application used for health checks and manual sync endpoints.
+- `calendar_sync.py` - Shared Firestore + Google Calendar sync logic.
+- `watch_bookings.py` - Long-running Firestore watcher that reacts to booking create/update/delete events.
 - `features.py` - Calendar event construction helpers and stubs for future booking logic.
 - `authorize.py` - One-time local OAuth helper that generates `token.json` for Google Calendar access.
 - `requirements.txt` - Python dependencies.
@@ -23,13 +23,11 @@ It also initializes Firebase Admin for future server-side Firestore work, but th
 
 The current booking flow is:
 
-1. The frontend collects booking data.
-2. The frontend saves the booking document to Firestore.
-3. The frontend calls `POST /book-tour/` on this backend.
-4. The backend calls `createEvent(...)` to build a Google Calendar event.
-5. The backend inserts the event into the `primary` calendar with `sendUpdates="all"`.
-
-Important detail: the backend does **not** currently create or update the Firestore booking record. That work happens in the frontend.
+1. The frontend saves the booking document to Firestore.
+2. `watch_bookings.py` receives the Firestore change.
+3. The watcher calls `createEvent(...)` to build a Google Calendar event.
+4. The watcher inserts or deletes the Google Calendar event.
+5. The watcher writes `calendarEventId`, `calendarSyncHash`, and sync status back to Firestore.
 
 ## Runtime Responsibilities
 
@@ -59,22 +57,24 @@ The backend uses the Google Calendar API client to insert events into the connec
 
 ### `main.py`
 
-This is the FastAPI entrypoint.
+This is the compatibility API entrypoint.
 
 It defines:
 
 - `app = FastAPI()`
 - CORS middleware
-- Firebase initialization
-- Google Calendar client initialization
-- HTTP routes
+- manual sync endpoints for backfills or debugging
+- compatibility responses for legacy browser-triggered booking routes
 
 Routes currently exposed:
 
 - `GET /`
 - `OPTIONS /{path:path}`
-- `POST /test-book`
 - `POST /book-tour/`
+- `POST /cancel-booking/`
+- `POST /reschedule-booking/`
+- `POST /sync-booking/{bookingId}`
+- `POST /delete-booking-sync/{bookingId}`
 
 ### `features.py`
 
@@ -86,7 +86,9 @@ Current behavior:
 
 - Reads `startTimeISO` and `endTimeISO` from the request data.
 - Uses `tourType` as the event title when present.
-- Falls back to a default Baskin Engineering location.
+- Resolves invite defaults in this order:
+- `calendarInviteLocation` from the booking, then from the related `Tours/{tourId}` document, then booking `location`, then the tour-type fallback
+- `calendarInviteDetails` from the booking, then from the related `Tours/{tourId}` document, then booking `inviteDetails`, then booking `description`, then the tour-type fallback
 - Adds the booking email as an attendee.
 - Adds any BESAs listed in `data["besas"]` as attendees too.
 - Sets timezone to `America/Los_Angeles`.
@@ -193,6 +195,36 @@ For local development:
 uvicorn main:app --reload
 ```
 
+### Run the Firestore Watcher
+
+This is the process that now creates, updates, and deletes calendar invites:
+
+```bash
+python3 watch_bookings.py
+```
+
+### Firebase Cloud Functions
+
+This repo also includes a production-ready Firebase Functions codebase in [`functions/`](/Users/arely/besabookingapi/functions) that replaces the local watcher with Firestore-triggered functions.
+
+Before deploying functions, set these environment variables for the functions runtime:
+
+- `CALENDAR_CLIENT_ID`
+- `CALENDAR_CLIENT_SECRET`
+- `CALENDAR_REFRESH_TOKEN`
+- `CALENDAR_TOKEN` - optional
+- `CALENDAR_ID` - optional, defaults to `primary`
+
+Then deploy:
+
+```bash
+cd functions
+npm install
+npm run build
+cd ..
+npx firebase-tools deploy --only functions
+```
+
 If you want to run the module directly:
 
 ```bash
@@ -229,40 +261,15 @@ This route manually sets:
 - `Access-Control-Allow-Methods`
 - `Access-Control-Allow-Headers`
 
-### `POST /test-book`
-
-Developer stub endpoint.
-
-It currently builds a hard-coded sample booking payload, but it does not return or persist anything. It is effectively a placeholder for manual testing.
-
 ### `POST /book-tour/`
 
-Main booking endpoint.
-
-Request body:
-
-```json
-{
-  "startTimeISO": "2025-12-19T15:30:00-08:00",
-  "endTimeISO": "2025-12-19T16:30:00-08:00",
-  "email": "visitor@example.com",
-  "firstName": "Ada",
-  "lastName": "Lovelace",
-  "besas": [
-    { "email": "guide@example.com", "name": "Guide Name" }
-  ],
-  "tourType": "BESAs Drop In Office Hours",
-  "location": "Baskin Engineering Courtyard"
-}
-```
+Legacy compatibility endpoint.
 
 Behavior:
 
-- The request JSON is passed to `createEvent(...)`.
-- The returned event is inserted into the primary Google Calendar.
-- The API returns the Google Calendar API response from `events().insert(...).execute()`.
-
-If `calendar_service` is unavailable, this route will fail when it tries to call `calendar_service.events()`.
+- Returns an informational response.
+- Does not create Calendar events directly.
+- Firestore changes are the source of truth for Calendar sync.
 
 ## Google Calendar Event Shape
 
@@ -280,7 +287,13 @@ The event created in `features.py` includes:
 - `visibility`
 - `reminders`
 
-The description text is currently hard-coded and includes:
+Tour-level fields now supported by this backend:
+
+- `tourId` on the booking
+- `calendarInviteLocation` on the booking or `Tours/{tourId}`
+- `calendarInviteDetails` on the booking or `Tours/{tourId}`
+
+If those custom fields are missing, the description text falls back to the built-in tour-type templates, which currently include:
 
 - Tour location instructions
 - Contact email
@@ -293,8 +306,9 @@ The description text is currently hard-coded and includes:
 
 ### Vercel Config
 
-- `main.py` is the build entrypoint.
+- `main.py` is the build entrypoint for manual sync endpoints.
 - All routes are rewritten to `main.py`.
+- `watch_bookings.py` is **not** a Vercel serverless function. It must run as a separate long-lived process or be migrated to Firebase/Cloud Run if you want managed Firestore-triggered sync in production.
 
 That means the same FastAPI app handles every deployed backend route.
 
@@ -305,10 +319,9 @@ These are current code realities, not idealized architecture decisions:
 - `ALLOWED_ORIGINS` is defined in `main.py`, but the CORS middleware currently hardcodes only `https://besa-booking.vercel.app`.
 - `FRONTEND` points to a different Vercel URL than the middleware origin list.
 - The backend does not yet expose CRUD endpoints for bookings.
-- The backend does not currently write to Firestore.
-- `assignBESA()` and `modifyBooking()` are placeholders.
-- `POST /test-book` is a stub and does not validate or return useful data.
-- The calendar flow depends on a valid OAuth token or refresh token.
+- Firestore-triggered sync requires a long-lived worker process.
+- Vercel alone will not keep `watch_bookings.py` running.
+- The calendar flow depends on valid Firestore credentials and valid Google Calendar credentials.
 
 ## Practical Troubleshooting
 
@@ -343,4 +356,3 @@ If you keep extending this backend, the next logical additions are:
 - Proper request/response models with Pydantic
 - Error handling for missing credentials and invalid payloads
 - Automated tests for `createEvent(...)` and the booking route
-
