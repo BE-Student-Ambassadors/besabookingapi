@@ -276,7 +276,7 @@ export async function insertCalendarEvent(
   const response = await calendar.events.insert({
     calendarId,
     requestBody: createCalendarEvent(booking),
-    sendUpdates: "externalOnly",
+    sendUpdates: "all",
   });
   return response.data;
 }
@@ -291,7 +291,7 @@ export async function updateCalendarEvent(
     calendarId,
     eventId,
     requestBody: createCalendarEvent(booking),
-    sendUpdates: "externalOnly",
+    sendUpdates: "all",
   });
   return response.data;
 }
@@ -306,7 +306,7 @@ export async function deleteCalendarEvent(
     await calendar.events.delete({
       calendarId,
       eventId,
-      sendUpdates: "externalOnly",
+      sendUpdates: "all",
     });
     return true;
   } catch (error: unknown) {
