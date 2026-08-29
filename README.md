@@ -1,18 +1,17 @@
 # Backend Documentation
 
-This folder contains the backend logic used by the booking app to keep Google Calendar in sync with Firestore bookings.
+This folder contains the booking API and Firebase Functions used to keep Google Calendar in sync with Firestore bookings.
 
 The backend is intentionally small. It currently does **one real production job**:
 
-1. Watch the Firestore `Bookings` collection.
+1. Use Firebase Functions to watch the Firestore `Bookings` collection.
 2. Create, replace, or delete Google Calendar events when bookings change.
 3. Store `calendarEventId` and sync metadata back on the booking document.
 
 ## What Lives Here
 
-- `main.py` - FastAPI application used for health checks and manual sync endpoints.
-- `calendar_sync.py` - Shared Firestore + Google Calendar sync logic.
-- `watch_bookings.py` - Long-running Firestore watcher that reacts to booking create/update/delete events.
+- `main.py` - FastAPI application for health checks and booking API routes.
+- `functions/` - Firebase Functions that create, update, and delete Google Calendar events from Firestore changes.
 - `features.py` - Calendar event construction helpers and stubs for future booking logic.
 - `authorize.py` - One-time local OAuth helper that generates `token.json` for Google Calendar access.
 - `requirements.txt` - Python dependencies.
@@ -23,11 +22,10 @@ The backend is intentionally small. It currently does **one real production job*
 
 The current booking flow is:
 
-1. The frontend saves the booking document to Firestore.
-2. `watch_bookings.py` receives the Firestore change.
-3. The watcher calls `createEvent(...)` to build a Google Calendar event.
-4. The watcher inserts or deletes the Google Calendar event.
-5. The watcher writes `calendarEventId`, `calendarSyncHash`, and sync status back to Firestore.
+1. The frontend calls the booking API, which saves the booking document to Firestore.
+2. A Firebase Function receives the Firestore change.
+3. The function creates, updates, or deletes the Google Calendar event.
+4. The function writes `calendarEventId`, `calendarSyncHash`, and sync status back to the booking document.
 
 ## Runtime Responsibilities
 
@@ -63,7 +61,6 @@ It defines:
 
 - `app = FastAPI()`
 - CORS middleware
-- manual sync endpoints for backfills or debugging
 - compatibility responses for legacy browser-triggered booking routes
 
 Routes currently exposed:
@@ -73,8 +70,6 @@ Routes currently exposed:
 - `POST /book-tour/`
 - `POST /cancel-booking/`
 - `POST /reschedule-booking/`
-- `POST /sync-booking/{bookingId}`
-- `POST /delete-booking-sync/{bookingId}`
 
 ### `features.py`
 
@@ -195,17 +190,9 @@ For local development:
 uvicorn main:app --reload
 ```
 
-### Run the Firestore Watcher
-
-This is the process that now creates, updates, and deletes calendar invites:
-
-```bash
-python3 watch_bookings.py
-```
-
 ### Firebase Cloud Functions
 
-This repo also includes a production-ready Firebase Functions codebase in [`functions/`](/Users/arely/besabookingapi/functions) that replaces the local watcher with Firestore-triggered functions.
+The production calendar-sync source is the Firestore-triggered Firebase Functions codebase in [`functions/`](functions/). Do not run a separate Firestore watcher or call a calendar-sync API endpoint.
 
 Before deploying functions, set these environment variables for the functions runtime:
 
@@ -306,9 +293,9 @@ If those custom fields are missing, the description text falls back to the built
 
 ### Vercel Config
 
-- `main.py` is the build entrypoint for manual sync endpoints.
+- `main.py` is the build entrypoint for booking API endpoints.
 - All routes are rewritten to `main.py`.
-- `watch_bookings.py` is **not** a Vercel serverless function. It must run as a separate long-lived process or be migrated to Firebase/Cloud Run if you want managed Firestore-triggered sync in production.
+- Firebase Functions deploy separately and are the only production calendar-sync runtime.
 
 That means the same FastAPI app handles every deployed backend route.
 
@@ -319,9 +306,9 @@ These are current code realities, not idealized architecture decisions:
 - `ALLOWED_ORIGINS` is defined in `main.py`, but the CORS middleware currently hardcodes only `https://besa-booking.vercel.app`.
 - `FRONTEND` points to a different Vercel URL than the middleware origin list.
 - The backend does not yet expose CRUD endpoints for bookings.
-- Firestore-triggered sync requires a long-lived worker process.
-- Vercel alone will not keep `watch_bookings.py` running.
-- The calendar flow depends on valid Firestore credentials and valid Google Calendar credentials.
+- Firestore-triggered sync requires Firebase Functions to be deployed.
+- Vercel does not deploy Firebase Functions.
+- The calendar flow depends on valid Firebase Function secrets and Google Calendar credentials.
 
 ## Practical Troubleshooting
 
@@ -329,10 +316,9 @@ These are current code realities, not idealized architecture decisions:
 
 Check:
 
-- `token.json` exists, or the `CALENDAR_*` environment variables are set
+- the Firebase Function secrets `CALENDAR_CLIENT_ID`, `CALENDAR_CLIENT_SECRET`, and `CALENDAR_REFRESH_TOKEN` are configured
 - the Google account has Calendar API access
 - the target calendar is reachable
-- `calendar_service` is not `None`
 
 ### Firebase Fails to Initialize
 
