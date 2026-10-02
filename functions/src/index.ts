@@ -29,7 +29,8 @@ import {
   isKnownOfficeHoursChannel,
   syncOfficeHoursFromCalendar,
 } from "./officeHours";
-import {syncSiteAdjustmentsToCalendar} from "./siteAdjustments";
+import {pullSiteAdjustmentEdits, syncSiteAdjustmentsToCalendar} from "./siteAdjustments";
+import {PermanentChangeRequest, applyPermanentChange} from "./permanentChanges";
 
 initializeApp();
 setGlobalOptions({maxInstances: 10});
@@ -294,6 +295,8 @@ function getOfficeHoursWriteCalendarId() {
 
 async function runOfficeHoursSync() {
   const {calendar} = getCalendarRuntime("primary");
+  // First take in edits made in Google Calendar to the site's "(Temporary)" events
+  await pullSiteAdjustmentEdits({db, calendar, calendarId: getOfficeHoursWriteCalendarId()});
   return syncOfficeHoursFromCalendar({db, calendar, calendarIds: getOfficeHoursCalendarIds()});
 }
 
@@ -377,6 +380,33 @@ export const onBesaWrittenSyncTempAdjustments = onDocumentWritten(
     } catch (error) {
       logger.error("Syncing site office-hour changes to Google Calendar failed", {besaId, error});
       throw error;
+    }
+  }
+);
+
+// Permanent office-hours changes from the booking site's calendar view. The site writes an
+// OfficeHoursChangeRequests doc; this edits the "{Name}'s Availability" recurring event on
+// Google Calendar (see permanentChanges.ts), re-syncs office hours so Firestore has the new
+// weekly hours, and records the outcome on the request for the site to show.
+export const onOfficeHoursChangeRequested = onDocumentCreated(
+  {document: "OfficeHoursChangeRequests/{requestId}", secrets: calendarSecrets, maxInstances: 1, concurrency: 1, timeoutSeconds: 300},
+  async (event) => {
+    const snapshot = event.data;
+    const data = snapshot?.data() as (PermanentChangeRequest & {status?: string}) | undefined;
+    if (!snapshot || !data || data.status !== "pending") return;
+
+    const {calendar} = getCalendarRuntime("primary");
+    try {
+      const result = await applyPermanentChange({
+        calendar, calendarIds: getOfficeHoursCalendarIds(), writeCalendarId: getOfficeHoursWriteCalendarId(), request: data,
+      });
+      await runOfficeHoursSync();
+      await snapshot.ref.update({status: "done", ...result, completedAt: new Date().toISOString()});
+      logger.info("Applied permanent office-hours change to Google Calendar", {requestId: event.params.requestId, ...result});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("Permanent office-hours change failed", {requestId: event.params.requestId, error});
+      await snapshot.ref.update({status: "failed", error: message, completedAt: new Date().toISOString()});
     }
   }
 );

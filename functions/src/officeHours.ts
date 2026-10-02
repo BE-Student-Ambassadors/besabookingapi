@@ -7,6 +7,12 @@ import type {calendar_v3} from "googleapis";
 
 // Kept here (not imported from siteAdjustments.ts) to avoid a circular import.
 const SITE_ADJUSTMENT_PROPERTY = "besaSiteAdjustmentId";
+// Set on a weekly series the booking site ended to take a weekday out of someone's office
+// hours. Unlike other ended series, it no longer counts toward the weekly pattern.
+export const STOPPED_WEEKLY_PROPERTY = "besaStoppedWeekly";
+
+const CHANGED_ON_CALENDAR_REASON = "Office hours changed for this date on the calendar";
+const REMOVED_ON_CALENDAR_REASON = "Office hours removed for this date on the calendar";
 
 // Derives BESA office hours from the shared BESA Google Calendar and writes them onto the
 // Besas docs that the booking site's availability code reads:
@@ -29,7 +35,7 @@ const CALENDAR_SOURCE = "calendar";
 const STATE_COLLECTION = "CalendarSyncState";
 
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
-type DayKey = typeof DAY_KEYS[number];
+export type DayKey = typeof DAY_KEYS[number];
 const RRULE_DAYS: Record<string, DayKey> = {
   SU: "sunday", MO: "monday", TU: "tuesday", WE: "wednesday", TH: "thursday", FR: "friday", SA: "saturday",
 };
@@ -77,8 +83,9 @@ type ParsedInstance = {
   attendees: Array<{email: string; accepted: boolean}>;
 };
 
-type WeeklySeries = {
+export type WeeklySeries = {
   eventId: string;
+  stopped: boolean; // ended by the booking site's "change to temporary" (see STOPPED_WEEKLY_PROPERTY)
   emails: string[];
   days: DayKey[];
   slot: Slot;
@@ -104,7 +111,7 @@ const localFormatter = new Intl.DateTimeFormat("en-CA", {
   hourCycle: "h23",
 });
 
-function toLocal(value: string | Date): {date: string; time: string} {
+export function toLocal(value: string | Date): {date: string; time: string} {
   const parts: Record<string, string> = {};
   for (const part of localFormatter.formatToParts(new Date(value))) {
     parts[part.type] = part.value;
@@ -112,12 +119,12 @@ function toLocal(value: string | Date): {date: string; time: string} {
   return {date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}`};
 }
 
-function addDays(date: string, days: number): string {
+export function addDays(date: string, days: number): string {
   const [y, m, d] = date.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
-function dayKeyOf(date: string): DayKey {
+export function dayKeyOf(date: string): DayKey {
   const [y, m, d] = date.split("-").map(Number);
   return DAY_KEYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
 }
@@ -182,7 +189,7 @@ function parseInstance(event: calendar_v3.Schema$Event, tourTitles: Set<string>)
   };
 }
 
-function parseWeeklySeries(event: calendar_v3.Schema$Event, tourTitles: Set<string>): WeeklySeries | null {
+export function parseWeeklySeries(event: calendar_v3.Schema$Event, tourTitles: Set<string>): WeeklySeries | null {
   if (!event.id || !event.recurrence || event.status === "cancelled") return null;
   if (classifyEvent(event, tourTitles) !== "weekly") return null;
   if (!event.start?.dateTime || !event.end?.dateTime) return null;
@@ -205,6 +212,7 @@ function parseWeeklySeries(event: calendar_v3.Schema$Event, tourTitles: Set<stri
 
   return {
     eventId: event.id,
+    stopped: event.extendedProperties?.shared?.[STOPPED_WEEKLY_PROPERTY] === "true",
     emails: parseAttendees(event).map((attendee) => attendee.email),
     days,
     slot: {start: start.time, end: end.time},
@@ -235,10 +243,11 @@ function withSlotIds(slots: Slot[]): TimeSlot[] {
 // The series that define a weekday's pattern. A series is superseded when another one for
 // the same weekday starts after it ends, which is what a "this and following events" edit
 // produces. The rest count even if they start later or have already ended (the pattern
-// keeps going past a series' end; tour end dates are what stop bookings).
+// keeps going past a series' end; tour end dates are what stop bookings), except series the
+// booking site stopped on purpose.
 function seriesForPattern(series: WeeklySeries[], day: DayKey): WeeklySeries[] {
   const forDay = series.filter((s) => s.days.includes(day));
-  return forDay.filter((s) => !forDay.some((t) => s.until && t.from > s.until));
+  return forDay.filter((s) => !s.stopped && !forDay.some((t) => s.until && t.from > s.until));
 }
 
 // Dates up to the last series end for that weekday follow the actual occurrences. That
@@ -318,7 +327,7 @@ export function deriveBesaSchedule(
         id: stableId("adj", email, date, slotsKey(timeSlots)),
         date,
         timeSlots,
-        reason: "Office hours changed for this date on the calendar",
+        reason: CHANGED_ON_CALENDAR_REASON,
         source: CALENDAR_SOURCE,
       });
     } else {
@@ -326,7 +335,7 @@ export function deriveBesaSchedule(
         id: stableId("out", email, date, "noHours"),
         date,
         allDay: true,
-        reason: "Office hours removed for this date on the calendar",
+        reason: REMOVED_ON_CALENDAR_REASON,
         source: CALENDAR_SOURCE,
       });
     }
@@ -391,6 +400,21 @@ async function applyScheduleToBesa(
     const snapshot = await tx.get(ref);
     const data = snapshot.data() || {};
     const updates: Record<string, unknown> = {};
+
+    // On dates where the booking site has its own one-day change, the site decides that day's
+    // hours (siteAdjustments.ts keeps it in line with the calendar), so don't derive them here.
+    const siteDates = new Set(
+      (Array.isArray(data.tempAdjustments) ? data.tempAdjustments : [])
+        .filter((entry: Record<string, unknown>) => entry && entry.source !== CALENDAR_SOURCE && typeof entry.date === "string")
+        .map((entry: Record<string, unknown>) => entry.date as string)
+    );
+    derived = {
+      ...derived,
+      tempAdjustments: derived.tempAdjustments.filter((entry) => !siteDates.has(entry.date)),
+      tempUnavailability: derived.tempUnavailability.filter(
+        (entry) => !(siteDates.has(entry.date) && entry.reason === REMOVED_ON_CALENDAR_REASON)
+      ),
+    };
 
     const tempAdjustments = mergeTempEntries(data.tempAdjustments, derived.tempAdjustments, today, now);
     if (stableStringify(tempAdjustments) !== stableStringify(data.tempAdjustments || [])) {
