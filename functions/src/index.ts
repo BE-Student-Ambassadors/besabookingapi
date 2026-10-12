@@ -41,7 +41,8 @@ const calendarClientSecret = defineSecret("CALENDAR_CLIENT_SECRET");
 const calendarRefreshToken = defineSecret("CALENDAR_REFRESH_TOKEN");
 const officeHoursCalendarIds = defineString("OFFICE_HOURS_CALENDAR_IDS", {
   description: "Comma-separated Google Calendar IDs to read BESA availability from " +
-    "(the shared BESA calendar, plus \"primary\" for events BESAs invite the account to).",
+    "(the shared BESA calendar, plus \"primary\" for events BESAs invite the account to). " +
+    "Only used until the list is saved from the Office Hours page (Settings/officeHoursCalendars).",
 });
 const officeHoursWriteCalendarId = defineString("OFFICE_HOURS_WRITE_CALENDAR_ID", {
   default: "",
@@ -275,7 +276,16 @@ export const onBookingDeleted = onDocumentDeleted(bookingTriggerOptions, async (
 
 const calendarSecrets = [calendarClientId, calendarClientSecret, calendarRefreshToken];
 
-function getOfficeHoursCalendarIds() {
+const OFFICE_HOURS_CALENDARS_DOC = "Settings/officeHoursCalendars";
+
+// The admin Office Hours page edits the list in Firestore; the env param is the fallback
+// until it has been saved there.
+async function getOfficeHoursCalendarIds() {
+  const saved = (await db.doc(OFFICE_HOURS_CALENDARS_DOC).get()).get("calendarIds");
+  if (Array.isArray(saved)) {
+    const ids = saved.filter((id): id is string => typeof id === "string" && id.trim() !== "").map((id) => id.trim());
+    if (ids.length > 0) return ids;
+  }
   return officeHoursCalendarIds.value().split(",").map((id) => id.trim()).filter(Boolean);
 }
 
@@ -286,18 +296,18 @@ function getOfficeHoursWebhookUrl() {
   return `https://us-central1-${projectId}.cloudfunctions.net/officeHoursCalendarWebhook`;
 }
 
-function getOfficeHoursWriteCalendarId() {
+async function getOfficeHoursWriteCalendarId() {
   const configured = officeHoursWriteCalendarId.value().trim();
   if (configured) return configured;
-  const ids = getOfficeHoursCalendarIds();
+  const ids = await getOfficeHoursCalendarIds();
   return ids.find((id) => id !== "primary") || ids[0] || "primary";
 }
 
 async function runOfficeHoursSync() {
   const {calendar} = getCalendarRuntime("primary");
   // First take in edits made in Google Calendar to the site's "(Temporary)" events
-  await pullSiteAdjustmentEdits({db, calendar, calendarId: getOfficeHoursWriteCalendarId()});
-  return syncOfficeHoursFromCalendar({db, calendar, calendarIds: getOfficeHoursCalendarIds()});
+  await pullSiteAdjustmentEdits({db, calendar, calendarId: await getOfficeHoursWriteCalendarId()});
+  return syncOfficeHoursFromCalendar({db, calendar, calendarIds: await getOfficeHoursCalendarIds()});
 }
 
 // Google Calendar push notifications land here. They say only that something changed, so
@@ -330,26 +340,51 @@ export const officeHoursCalendarWebhook = onRequest(
   }
 );
 
+async function ensureWatches() {
+  const {calendar} = getCalendarRuntime("primary");
+  await ensureOfficeHoursWatches({
+    db,
+    calendar,
+    calendarIds: await getOfficeHoursCalendarIds(),
+    webhookUrl: getOfficeHoursWebhookUrl(),
+  });
+}
+
 // Renews the push channels before they expire and runs a full sync, which also rolls the
 // date window forward and catches anything a missed notification would have changed.
 export const refreshOfficeHoursCalendarSync = onSchedule(
   {schedule: "every 6 hours", timeZone: OFFICE_HOURS_TIME_ZONE, secrets: calendarSecrets, timeoutSeconds: 300},
   async () => {
     const {calendar} = getCalendarRuntime("primary");
-    await ensureOfficeHoursWatches({
-      db,
-      calendar,
-      calendarIds: getOfficeHoursCalendarIds(),
-      webhookUrl: getOfficeHoursWebhookUrl(),
-    });
+    await ensureWatches();
     await runOfficeHoursSync();
 
     // Catch up on site changes a failed or missed trigger didn't push to the calendar.
     const besas = await db.collection("Besas").get();
+    const writeCalendarId = await getOfficeHoursWriteCalendarId();
     for (const doc of besas.docs) {
       await syncSiteAdjustmentsToCalendar({
-        db, calendar, calendarId: getOfficeHoursWriteCalendarId(), besaId: doc.id, besaData: doc.data(),
+        db, calendar, calendarId: writeCalendarId, besaId: doc.id, besaData: doc.data(),
       });
+    }
+  }
+);
+
+// Calendars added or removed on the admin Office Hours page: open/close the push channels
+// right away and re-sync, so office hours reflect the new set without waiting for the schedule.
+export const onOfficeHoursCalendarsChanged = onDocumentWritten(
+  {document: OFFICE_HOURS_CALENDARS_DOC, secrets: calendarSecrets, maxInstances: 1, concurrency: 1, timeoutSeconds: 300},
+  async (event) => {
+    const before = event.data?.before.get("calendarIds");
+    const after = event.data?.after.get("calendarIds");
+    if (JSON.stringify(before ?? null) === JSON.stringify(after ?? null)) return;
+    try {
+      await ensureWatches();
+      await runOfficeHoursSync();
+      logger.info("Office hours calendars changed", {before, after});
+    } catch (error) {
+      logger.error("Re-syncing after office hours calendars changed failed", {error});
+      throw error;
     }
   }
 );
@@ -375,7 +410,7 @@ export const onBesaWrittenSyncTempAdjustments = onDocumentWritten(
     const {calendar} = getCalendarRuntime("primary");
     try {
       await syncSiteAdjustmentsToCalendar({
-        db, calendar, calendarId: getOfficeHoursWriteCalendarId(), besaId, besaData: after,
+        db, calendar, calendarId: await getOfficeHoursWriteCalendarId(), besaId, besaData: after,
       });
     } catch (error) {
       logger.error("Syncing site office-hour changes to Google Calendar failed", {besaId, error});
@@ -398,7 +433,10 @@ export const onOfficeHoursChangeRequested = onDocumentCreated(
     const {calendar} = getCalendarRuntime("primary");
     try {
       const result = await applyPermanentChange({
-        calendar, calendarIds: getOfficeHoursCalendarIds(), writeCalendarId: getOfficeHoursWriteCalendarId(), request: data,
+        calendar,
+        calendarIds: await getOfficeHoursCalendarIds(),
+        writeCalendarId: await getOfficeHoursWriteCalendarId(),
+        request: data,
       });
       await runOfficeHoursSync();
       await snapshot.ref.update({status: "done", ...result, completedAt: new Date().toISOString()});
