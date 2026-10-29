@@ -111,3 +111,14 @@ def create_booking_transactional(
 
 def update_booking(db: FirestoreClient, booking_id: str, values: Dict[str, Any]) -> None:
     db.collection("Bookings").document(booking_id).set(values, merge=True)
+
+
+def get_upcoming_bookings(db: FirestoreClient, from_date: str) -> List[Dict[str, Any]]:
+    """Bookings dated from_date (YYYY-MM-DD) or later. Used to balance BESA assignments."""
+    docs = db.collection("Bookings").where("date", ">=", from_date).stream()
+    out = []
+    for d in docs:
+        data = d.to_dict() or {}
+        data["bookingId"] = d.id
+        out.append(data)
+    return out

@@ -111,8 +111,17 @@ def create_booking(db, payload: BookingCreateRequest) -> Dict[str, Any]:
     duration_mins = avail.duration_in_minutes(tour.get("duration", 0), tour.get("durationUnit", "minutes"))
     start_dt, end_dt = _combine_start_end(payload.date, payload.startTime, duration_mins)
 
+    try:
+        upcoming_bookings = repo.get_upcoming_bookings(db, datetime.now().date().isoformat())
+        assignment_counts = assign.count_assignments(upcoming_bookings)
+    except Exception as exc:
+        # Never block a booking because load-balancing data couldn't be read:
+        # fall back to random order among eligible BESAs.
+        print(f"[assignment] load-balance lookup failed: {exc}")
+        assignment_counts = {}
+
     assigned_besas = assign.get_auto_assigned_besas(
-        besas, payload.tourId, payload.date, payload.startTime, duration_mins
+        besas, payload.tourId, payload.date, payload.startTime, duration_mins, assignment_counts
     )
 
     booking_payload = {
