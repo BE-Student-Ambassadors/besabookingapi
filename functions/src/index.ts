@@ -31,6 +31,7 @@ import {
 } from "./officeHours";
 import {pullSiteAdjustmentEdits, syncSiteAdjustmentsToCalendar} from "./siteAdjustments";
 import {PermanentChangeRequest, applyPermanentChange} from "./permanentChanges";
+import {reconcileTourGuests} from "./tourGuestSync";
 
 initializeApp();
 setGlobalOptions({maxInstances: 10});
@@ -206,6 +207,27 @@ async function deleteBookingRecord(booking: BookingRecord) {
     deleted,
   });
 }
+
+const tourGuestSyncMode = defineString("TOUR_GUEST_SYNC_MODE", {
+  default: "log",
+  description: "\"log\" only logs Google-vs-site BESA differences. \"apply\" makes Google Calendar win and updates bookings.",
+});
+
+export const reconcileTourGuestsFromCalendar = onSchedule(
+  {
+    schedule: "every 10 minutes",
+    timeZone: "America/Los_Angeles",
+    secrets: [calendarClientId, calendarClientSecret, calendarRefreshToken],
+  },
+  async () => {
+    await reconcileTourGuests({
+      db,
+      getCalendar: (calendarId) => getCalendarRuntime(calendarId).calendar,
+      hashFor: async (booking) => bookingSyncHash(await enrichBookingWithTourDefaults(booking)),
+      mode: tourGuestSyncMode.value() === "apply" ? "apply" : "log",
+    });
+  }
+);
 
 const bookingTriggerOptions = {
   document: "Bookings/{bookingId}",
